@@ -56,7 +56,7 @@ class MockAIClient(BaseAIClient):
 
 
 class NvidiaNIMClient(BaseAIClient):
-    """NVIDIA NIM API Client using standard library urllib."""
+    """NVIDIA NIM API Client using standard library urllib with robust error handling."""
 
     def __init__(
         self,
@@ -75,9 +75,8 @@ class NvidiaNIMClient(BaseAIClient):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> LLMResponse:
         if not self.api_key:
-            # Safe fallback if API key is not configured
             return LLMResponse(
-                content="[NVIDIA API Key not provided. Operating in fallback mode.]",
+                content="[NVIDIA API Key not provided. Please set NVIDIA_API_KEY in your .env file or environment variables.]",
                 tool_calls=[],
                 raw_response={"error": "missing_api_key"},
             )
@@ -118,11 +117,31 @@ class NvidiaNIMClient(BaseAIClient):
                     tool_calls=tool_calls,
                     raw_response=data,
                 )
-        except Exception as e:
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            err_msg = f"NVIDIA NIM API HTTP Error {e.code}: {e.reason}.\nDetails: {error_body}"
             return LLMResponse(
-                content=f"Error communicating with NVIDIA NIM API: {str(e)}",
+                content=f"[NVIDIA NIM API Error]: {err_msg}",
                 tool_calls=[],
-                raw_response={"error": str(e)},
+                raw_response={"error": err_msg, "code": e.code},
+            )
+        except urllib.error.URLError as e:
+            err_msg = f"NVIDIA NIM Connection Error: {e.reason}"
+            return LLMResponse(
+                content=f"[NVIDIA NIM Network Error]: {err_msg}",
+                tool_calls=[],
+                raw_response={"error": err_msg},
+            )
+        except Exception as e:
+            err_msg = f"Unexpected Error: {str(e)}"
+            return LLMResponse(
+                content=f"[NVIDIA NIM Error]: {err_msg}",
+                tool_calls=[],
+                raw_response={"error": err_msg},
             )
 
 
@@ -132,7 +151,6 @@ def parse_tool_calls_from_text(text: str) -> List[Dict[str, Any]]:
     if not text:
         return tool_calls
 
-    # Look for JSON code blocks or inline action JSON objects
     lines = text.split("\n")
     in_json = False
     json_buf = []
@@ -160,7 +178,6 @@ def parse_tool_calls_from_text(text: str) -> List[Dict[str, Any]]:
         if in_json:
             json_buf.append(line)
 
-    # Attempt parsing entire text if no markdown block was found
     if not tool_calls and "tool" in text:
         try:
             start_idx = text.find("{")

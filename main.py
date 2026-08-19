@@ -1,7 +1,7 @@
-"""Application entry point for JARVIS AI Workspace."""
+"""Application entry point for JARVIS AI Workspace (PyQt6)."""
 
 import sys
-import tkinter as tk
+from PyQt6.QtWidgets import QApplication
 from config import Config
 from ai import NvidiaNIMClient, MockAIClient
 from tools import create_default_registry
@@ -39,10 +39,11 @@ def main():
         memory_manager=memory,
     )
 
-    # 6. Launch Tkinter GUI Workspace
-    root = tk.Tk()
-    app = JarvisWorkspaceApp(root, agent=agent)
-    root.mainloop()
+    # 6. Launch PyQt6 GUI Workspace
+    app = QApplication(sys.argv)
+    window = JarvisWorkspaceApp(agent=agent)
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

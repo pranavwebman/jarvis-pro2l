@@ -1,157 +1,224 @@
-"""Modular GUI Workspace views for JARVIS using Python Tkinter."""
+"""PyQt6 Workspace GUI for JARVIS with responsive background worker threading."""
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, scrolledtext
-from typing import Optional, Callable, Dict, Any, List
+import sys
+from typing import Dict, Any, List, Optional
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSplitter,
+    QTextEdit,
+    QLineEdit,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QMessageBox,
+    QLabel,
+    QGroupBox,
+)
 
 
-class ChatPanel(ttk.Frame):
-    """Panel for user conversation and AI responses."""
+class AgentWorker(QThread):
+    """Background thread worker to execute Agent processing without freezing the UI."""
 
-    def __init__(self, parent, send_callback: Callable[[str], None]):
+    finished = pyqtSignal(dict)
+    confirmation_requested = pyqtSignal(str, dict)
+
+    def __init__(self, agent, user_text: str):
+        super().__init__()
+        self.agent = agent
+        self.user_text = user_text
+        self.confirmation_response: Optional[bool] = None
+
+    def run(self):
+        # Attach custom confirmation handler if agent is set
+        if self.agent:
+            self.agent.confirmation_handler = self._handle_confirmation
+
+        result = self.agent.process_user_input(self.user_text) if self.agent else {}
+        self.finished.emit(result)
+
+    def _handle_confirmation(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        self.confirmation_response = None
+        self.confirmation_requested.emit(tool_name, arguments)
+
+        # Wait for main thread signal response
+        while self.confirmation_response is None:
+            self.msleep(100)
+        return self.confirmation_response
+
+
+class ChatPanel(QWidget):
+    """Panel for conversation history and user input."""
+
+    send_message = pyqtSignal(str)
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.send_callback = send_callback
         self._build_ui()
 
     def _build_ui(self):
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        layout = QVBoxLayout(self)
 
-        # Message History
-        self.history_text = scrolledtext.ScrolledText(
-            self, wrap=tk.WORD, state="disabled", width=60, height=20
-        )
-        self.history_text.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+        self.history_text = QTextEdit()
+        self.history_text.setReadOnly(True)
+        layout.addWidget(self.history_text)
 
-        # Input box
-        self.input_var = tk.StringVar()
-        self.input_entry = ttk.Entry(self, textvariable=self.input_var)
-        self.input_entry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
-        self.input_entry.bind("<Return>", lambda e: self._on_send())
+        input_layout = QHBoxLayout()
+        self.input_entry = QLineEdit()
+        self.input_entry.setPlaceholderText("Type your message or instruction for JARVIS...")
+        self.input_entry.returnPressed.connect(self._on_send)
+        input_layout.addWidget(self.input_entry)
 
-        # Send Button
-        self.send_btn = ttk.Button(self, text="Send", command=self._on_send)
-        self.send_btn.grid(row=1, column=1, padx=5, pady=5)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.clicked.connect(self._on_send)
+        input_layout.addWidget(self.send_btn)
+
+        layout.addLayout(input_layout)
 
     def _on_send(self):
-        text = self.input_var.get().strip()
+        text = self.input_entry.text().strip()
         if text:
             self.append_message("User", text)
-            self.input_var.set("")
-            self.send_callback(text)
+            self.input_entry.clear()
+            self.send_message.emit(text)
 
     def append_message(self, sender: str, message: str):
-        self.history_text.config(state="normal")
-        self.history_text.insert(tk.END, f"{sender}: {message}\n\n")
-        self.history_text.see(tk.END)
-        self.history_text.config(state="disabled")
+        self.history_text.append(f"<b>{sender}:</b> {message}<br>")
+
+    def set_inputs_enabled(self, enabled: bool):
+        self.input_entry.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
 
 
-class TaskPanel(ttk.Frame):
-    """Panel displaying active project tasks and multi-step plan steps."""
+class TaskPanel(QWidget):
+    """Panel displaying active project tasks and multi-step plans."""
 
-    def __init__(self, parent):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self._build_ui()
 
     def _build_ui(self):
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        layout = QVBoxLayout(self)
 
-        lbl = ttk.Label(self, text="Current Tasks & Planning", font=("Helvetica", 10, "bold"))
-        lbl.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        group = QGroupBox("Active Tasks & Planning")
+        group_layout = QVBoxLayout(group)
 
-        self.tree = ttk.Treeview(self, columns=("status", "title"), show="headings")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("title", text="Task Description")
-        self.tree.column("status", width=80)
-        self.tree.column("title", width=300)
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Status", "Task Description"])
+        self.tree.setColumnWidth(0, 100)
+        group_layout.addWidget(self.tree)
+
+        layout.addWidget(group)
 
     def update_tasks(self, tasks: List[Dict[str, Any]]):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.tree.clear()
         for t in tasks:
-            self.tree.insert("", "end", values=(t.get("status", "pending"), t.get("title", "")))
+            item = QTreeWidgetItem([t.get("status", "pending").upper(), t.get("title", "")])
+            self.tree.addTopLevelItem(item)
 
 
-class ToolActivityPanel(ttk.Frame):
-    """Panel displaying tool actions, validation status, and results."""
+class ToolActivityPanel(QWidget):
+    """Panel displaying log of requested tool operations and validation results."""
 
-    def __init__(self, parent):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self._build_ui()
 
     def _build_ui(self):
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        layout = QVBoxLayout(self)
 
-        lbl = ttk.Label(self, text="Tool Activity Log", font=("Helvetica", 10, "bold"))
-        lbl.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        group = QGroupBox("Tool Execution Activity Log")
+        group_layout = QVBoxLayout(group)
 
-        self.log_text = scrolledtext.ScrolledText(
-            self, wrap=tk.WORD, state="disabled", width=40, height=10
-        )
-        self.log_text.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        group_layout.addWidget(self.log_text)
+
+        layout.addWidget(group)
 
     def log_activity(self, tool_name: str, status: str, details: str):
-        self.log_text.config(state="normal")
-        self.log_text.insert(tk.END, f"[{status}] {tool_name}\n  Details: {details}\n\n")
-        self.log_text.see(tk.END)
-        self.log_text.config(state="disabled")
+        color = "green" if status == "SUCCESS" else "red"
+        self.log_text.append(
+            f"<b>[{status}]</b> {tool_name}<br>&nbsp;&nbsp;<font color='{color}'>Details: {details}</font><br>"
+        )
 
 
-class JarvisWorkspaceApp:
-    """Main Application Window for JARVIS Workspace."""
+class JarvisWorkspaceApp(QMainWindow):
+    """Main PyQt6 Window for JARVIS AI Workspace."""
 
-    def __init__(self, root: tk.Tk, agent=None):
-        self.root = root
+    def __init__(self, agent=None):
+        super().__init__()
         self.agent = agent
-        self.root.title("JARVIS - AI Personal Workspace (Windows 10)")
-        self.root.geometry("1024x700")
+        self.worker: Optional[AgentWorker] = None
 
-        if self.agent:
-            self.agent.confirmation_handler = self.request_confirmation
+        self.setWindowTitle("JARVIS - Personal AI Workspace (Windows 10)")
+        self.resize(1100, 750)
 
-        self._build_workspace()
+        self._build_ui()
 
-    def _build_workspace(self):
-        # Configure main window grid
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+    def _build_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
 
-        # PanedWindow splitting Chat (left) and Workspace Tools/Tasks (right)
-        self.main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        self.main_paned.grid(row=0, column=0, sticky="nsew")
+        main_layout = QHBoxLayout(central_widget)
 
-        # Left: Chat
-        self.chat_panel = ChatPanel(self.main_paned, send_callback=self.on_user_send)
-        self.main_paned.add(self.chat_panel, weight=3)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Right: Task & Activity Split
-        self.right_paned = ttk.PanedWindow(self.main_paned, orient=tk.VERTICAL)
-        self.task_panel = TaskPanel(self.right_paned)
-        self.activity_panel = ToolActivityPanel(self.right_paned)
+        # Left panel: Chat
+        self.chat_panel = ChatPanel()
+        self.chat_panel.send_message.connect(self.on_user_send)
+        splitter.addWidget(self.chat_panel)
 
-        self.right_paned.add(self.task_panel, weight=2)
-        self.right_paned.add(self.activity_panel, weight=2)
-        self.main_paned.add(self.right_paned, weight=2)
+        # Right splitter: Tasks & Activity Log
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.task_panel = TaskPanel()
+        self.activity_panel = ToolActivityPanel()
 
-    def request_confirmation(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
-        """Prompt user dialog for confirming dangerous or modifying tool actions."""
-        msg = f"JARVIS requests permission to execute tool:\n\nTool: {tool_name}\nArguments: {arguments}\n\nAllow execution?"
-        return messagebox.askyesno("JARVIS Permission Request", msg)
+        right_splitter.addWidget(self.task_panel)
+        right_splitter.addWidget(self.activity_panel)
+
+        splitter.addWidget(right_splitter)
+        splitter.setSizes([600, 500])
+
+        main_layout.addWidget(splitter)
 
     def on_user_send(self, text: str):
         if not self.agent:
             self.chat_panel.append_message("System", "Agent core not connected.")
             return
 
-        # Process input via Agent
-        result = self.agent.process_user_input(text)
+        self.chat_panel.set_inputs_enabled(False)
+        self.chat_panel.append_message("System", "<i>JARVIS is thinking...</i>")
 
-        if result.get("response"):
-            self.chat_panel.append_message("JARVIS", result["response"])
+        # Launch background worker thread so GUI stays 100% responsive
+        self.worker = AgentWorker(self.agent, text)
+        self.worker.finished.connect(self.on_agent_finished)
+        self.worker.confirmation_requested.connect(self.on_confirmation_requested)
+        self.worker.start()
+
+    def on_confirmation_requested(self, tool_name: str, arguments: Dict[str, Any]):
+        msg = f"JARVIS requests permission to execute tool:\n\nTool: {tool_name}\nArguments: {arguments}\n\nAllow execution?"
+        reply = QMessageBox.question(
+            self,
+            "JARVIS Permission Request",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if self.worker:
+            self.worker.confirmation_response = (reply == QMessageBox.StandardButton.Yes)
+
+    def on_agent_finished(self, result: Dict[str, Any]):
+        self.chat_panel.set_inputs_enabled(True)
+
+        resp = result.get("response", "")
+        if resp:
+            self.chat_panel.append_message("JARVIS", resp)
 
         for t_res in result.get("tool_results", []):
             tool_name = t_res.get("tool", "unknown")
@@ -160,7 +227,6 @@ class JarvisWorkspaceApp:
             details = t_res.get("data") or t_res.get("error")
             self.activity_panel.log_activity(tool_name, status, str(details))
 
-        # Update tasks
-        if self.agent.planner:
+        if self.agent and self.agent.planner:
             tasks = self.agent.planner.get_plan_summary()
             self.task_panel.update_tasks(tasks)
